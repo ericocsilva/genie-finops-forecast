@@ -1,0 +1,2714 @@
+{
+  "datasets": [
+    {
+      "name": "ds_kpi",
+      "displayName": "KPIs do mês de referência",
+      "queryLines": [
+        "WITH c AS (SELECT * FROM v_monthly_cost_components WHERE is_complete_month ORDER BY month DESC LIMIT 1),\n",
+        "f AS (SELECT SUM(total_with_headroom_usd) AS fy_base_usd FROM v_fy_forecast_total WHERE scenario = 'Base'),\n",
+        "u AS (SELECT COUNT(*) AS humans, COUNT_IF(NOT above_allowance) AS humans_within_free\n",
+        "      FROM v_identity_month WHERE identity_type = 'HUMANO' AND month = (SELECT MAX(month) FROM v_monthly_cost_components WHERE is_complete_month))\n",
+        "SELECT c.month AS ref_month, c.total_today_usd, c.total_post_promo_usd, c.sp_llm_post_promo_usd,\n",
+        "       c.genie_warehouse_usd, u.humans, u.humans_within_free / u.humans AS pct_within_free, f.fy_base_usd\n",
+        "FROM c CROSS JOIN f CROSS JOIN u\n"
+      ]
+    },
+    {
+      "name": "ds_components",
+      "displayName": "Histórico de custo por componente (regras pós-promoção)",
+      "queryLines": [
+        "SELECT month, 'LLM — usuários humanos' AS component, human_llm_post_promo_usd AS usd, total_today_usd FROM v_monthly_cost_components\n",
+        "WHERE is_complete_month AND month > (SELECT MIN(month) FROM v_monthly_cost_components)\n",
+        "UNION ALL SELECT month, 'LLM — service principals', sp_llm_post_promo_usd, total_today_usd FROM v_monthly_cost_components\n",
+        "WHERE is_complete_month AND month > (SELECT MIN(month) FROM v_monthly_cost_components)\n",
+        "UNION ALL SELECT month, 'SQL warehouse (Genie)', genie_warehouse_usd, total_today_usd FROM v_monthly_cost_components\n",
+        "WHERE is_complete_month AND month > (SELECT MIN(month) FROM v_monthly_cost_components)\n",
+        "ORDER BY month\n"
+      ]
+    },
+    {
+      "name": "ds_today_vs_post",
+      "displayName": "Hoje vs regras de fev/2027",
+      "queryLines": [
+        "SELECT month, 'Faturado hoje (promoção)' AS basis, total_today_usd AS usd FROM v_monthly_cost_components\n",
+        "WHERE is_complete_month AND month > (SELECT MIN(month) FROM v_monthly_cost_components)\n",
+        "UNION ALL SELECT month, 'Mesmo uso com regras de fev/2027', total_post_promo_usd FROM v_monthly_cost_components\n",
+        "WHERE is_complete_month AND month > (SELECT MIN(month) FROM v_monthly_cost_components)\n",
+        "ORDER BY month\n"
+      ]
+    },
+    {
+      "name": "ds_surface",
+      "displayName": "DBUs por superfície e tipo de identidade",
+      "queryLines": [
+        "SELECT month, surface, identity_type, channel, free_dbus, billed_dbus, full_rate_dbus, identities\n",
+        "FROM v_monthly_baseline WHERE month > (SELECT MIN(month) FROM v_monthly_cost_components) AND month <= (SELECT MAX(month) FROM v_monthly_cost_components WHERE is_complete_month)\n",
+        "ORDER BY month\n"
+      ]
+    },
+    {
+      "name": "ds_persona",
+      "displayName": "Personas por mês",
+      "queryLines": [
+        "SELECT month, persona, users, p50_dbus, p90_dbus, avg_dbus, billable_dbus_post_promo, cost_post_promo_usd, users_within_free\n",
+        "FROM v_persona_stats WHERE month > (SELECT MIN(month) FROM v_monthly_cost_components) AND month <= (SELECT MAX(month) FROM v_monthly_cost_components WHERE is_complete_month)\n",
+        "ORDER BY month, persona\n"
+      ]
+    },
+    {
+      "name": "ds_band",
+      "displayName": "Distribuição de DBUs por usuário (mês de referência)",
+      "queryLines": [
+        "SELECT dbu_band, persona, COUNT(*) AS users, SUM(cost_post_promo_usd) AS cost_post_promo_usd\n",
+        "FROM v_user_persona_month WHERE month = (SELECT MAX(month) FROM v_monthly_cost_components WHERE is_complete_month)\n",
+        "GROUP BY ALL ORDER BY dbu_band\n"
+      ]
+    },
+    {
+      "name": "ds_top",
+      "displayName": "Top identidades (mês de referência)",
+      "queryLines": [
+        "SELECT i.run_as AS identity, i.identity_type,\n",
+        "       COALESCE(p.persona, 'Service principal') AS persona,\n",
+        "       i.full_rate_dbus, i.agents_dbus, i.one_dbus, i.code_dbus,\n",
+        "       i.billable_dbus_post_promo, i.cost_today_usd, i.cost_post_promo_usd\n",
+        "FROM v_identity_month i\n",
+        "LEFT JOIN v_user_persona_month p ON p.month = i.month AND p.run_as = i.run_as\n",
+        "WHERE i.month = (SELECT MAX(month) FROM v_monthly_cost_components WHERE is_complete_month)\n",
+        "ORDER BY i.cost_post_promo_usd DESC LIMIT 25\n"
+      ]
+    },
+    {
+      "name": "ds_attrib",
+      "displayName": "Atribuição de warehouse por Genie Agent",
+      "queryLines": [
+        "SELECT warehouse_name, agent_name, queries, share_of_warehouse, attributed_list_cost_usd, attributed_net_cost_usd,\n",
+        "       genie_space_id IS NOT NULL AS is_genie_agent\n",
+        "FROM v_warehouse_attribution WHERE month = (SELECT MAX(month) FROM v_monthly_cost_components WHERE is_complete_month)\n",
+        "ORDER BY attributed_net_cost_usd DESC LIMIT 50\n"
+      ]
+    },
+    {
+      "name": "ds_attrib_top",
+      "displayName": "Top 15 Genie Agents por custo de warehouse",
+      "queryLines": [
+        "SELECT agent_name, warehouse_name, attributed_net_cost_usd FROM v_warehouse_attribution\n",
+        "WHERE month = (SELECT MAX(month) FROM v_monthly_cost_components WHERE is_complete_month) AND genie_space_id IS NOT NULL\n",
+        "ORDER BY attributed_net_cost_usd DESC LIMIT 15\n"
+      ]
+    },
+    {
+      "name": "ds_unit",
+      "displayName": "Custo por pergunta por Genie Agent",
+      "queryLines": [
+        "SELECT agent_name, questions, agent_mode_share, active_identities, llm_dbus_per_question,\n",
+        "       llm_cost_per_question_usd, warehouse_cost_per_question_usd, total_cost_per_question_usd, warehouse_net_cost_usd\n",
+        "FROM v_unit_costs WHERE month = (SELECT MAX(month) FROM v_monthly_cost_components WHERE is_complete_month)\n",
+        "ORDER BY questions DESC LIMIT 25\n"
+      ]
+    },
+    {
+      "name": "ds_forecast",
+      "displayName": "Previsão FY2027 por cenário",
+      "queryLines": [
+        "SELECT month, scenario, scenario_order, in_promo, human_llm_usd, sp_llm_usd, genie_warehouse_usd,\n",
+        "       new_use_cases_usd, total_usd, total_with_headroom_usd\n",
+        "FROM v_fy_forecast_total ORDER BY scenario_order, month\n"
+      ]
+    },
+    {
+      "name": "ds_forecast_long",
+      "displayName": "Previsão FY2027 por componente",
+      "queryLines": [
+        "SELECT month, scenario, 'LLM — usuários humanos' AS component, human_llm_usd AS usd FROM v_fy_forecast_total\n",
+        "UNION ALL SELECT month, scenario, 'LLM — service principals', sp_llm_usd FROM v_fy_forecast_total\n",
+        "UNION ALL SELECT month, scenario, 'SQL warehouse (Genie)', genie_warehouse_usd FROM v_fy_forecast_total\n",
+        "UNION ALL SELECT month, scenario, 'Novos casos de uso', new_use_cases_usd FROM v_fy_forecast_total\n",
+        "ORDER BY month\n"
+      ]
+    },
+    {
+      "name": "ds_fy_totals",
+      "displayName": "Totais FY2027 por cenário",
+      "queryLines": [
+        "SELECT scenario, MIN(scenario_order) AS scenario_order, SUM(human_llm_usd) AS human_llm_usd, SUM(sp_llm_usd) AS sp_llm_usd,\n",
+        "       SUM(genie_warehouse_usd) AS genie_warehouse_usd, SUM(new_use_cases_usd) AS new_use_cases_usd,\n",
+        "       SUM(total_usd) AS total_usd, SUM(total_with_headroom_usd) AS total_with_headroom_usd\n",
+        "FROM v_fy_forecast_total GROUP BY scenario ORDER BY scenario_order\n"
+      ]
+    },
+    {
+      "name": "ds_assumptions",
+      "displayName": "Premissas",
+      "queryLines": [
+        "SELECT srti_sku, srti_list_price, srti_net_price_with_addon, contract_discount_srti, contract_discount_sql,\n",
+        "       addon_uplift, headroom, free_allowance_dbus, promo_factor, promo_end_date, fy_start,\n",
+        "       (SELECT baseline_month FROM v_forecast_baseline) AS baseline_month\n",
+        "FROM v_price\n"
+      ]
+    },
+    {
+      "name": "ds_scenarios",
+      "displayName": "Cenários",
+      "queryLines": [
+        "SELECT scenario, human_usage_growth_m, sp_growth_m, warehouse_growth_m, new_uc_usd_m, description\n",
+        "FROM forecast_scenarios ORDER BY scenario_order\n"
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "visao_geral",
+      "displayName": "Visão geral",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1",
+      "layout": [
+        {
+          "widget": {
+            "name": "ov_header",
+            "multilineTextboxSpec": {
+              "lines": [
+                "# Genie FinOps & Previsão FY2027\nQuanto o Genie custa **hoje**, quanto o **mesmo uso** custaria com as regras que entram em vigor em **01/02/2027** (fim da gratuidade de Genie Agents/One e do desconto de 25%) e a **previsão do FY2027**. Valores em US$ líquidos de desconto contratual (premissas na aba *Premissas*). _Fonte: system tables (`system.billing.usage`, `system.billing.list_prices`, `system.query.history`, `system.access.audit`)._"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_today",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_kpi",
+                  "fields": [
+                    {
+                      "name": "sum(total_today_usd)",
+                      "expression": "SUM(`total_today_usd`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(total_today_usd)",
+                  "displayName": "Custo Genie hoje (mês de ref.)",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "title": "Custo Genie hoje (mês de ref.)",
+                "showTitle": true,
+                "description": "LLM faturado (Genie Code + service principals) + warehouse atribuído ao Genie",
+                "showDescription": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 3,
+            "width": 3,
+            "height": 4
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_post",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_kpi",
+                  "fields": [
+                    {
+                      "name": "sum(total_post_promo_usd)",
+                      "expression": "SUM(`total_post_promo_usd`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(total_post_promo_usd)",
+                  "displayName": "Mesmo uso com regras de fev/2027",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "title": "Mesmo uso com regras de fev/2027",
+                "showTitle": true,
+                "description": "Franquia de 150 DBUs/usuário/mês compartilhada, sem promoção",
+                "showDescription": true
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 3,
+            "width": 3,
+            "height": 4
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_free",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_kpi",
+                  "fields": [
+                    {
+                      "name": "sum(pct_within_free)",
+                      "expression": "SUM(`pct_within_free`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(pct_within_free)",
+                  "displayName": "% usuários dentro da franquia",
+                  "format": {
+                    "type": "number-percent",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "title": "% usuários dentro da franquia",
+                "showTitle": true,
+                "description": "Usuários humanos com ≤ 150 DBUs no mês (custo de LLM = 0)",
+                "showDescription": true
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 3,
+            "width": 3,
+            "height": 4
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_fy",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_kpi",
+                  "fields": [
+                    {
+                      "name": "sum(fy_base_usd)",
+                      "expression": "SUM(`fy_base_usd`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(fy_base_usd)",
+                  "displayName": "Previsão FY2027 — cenário Base",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "title": "Previsão FY2027 — cenário Base",
+                "showTitle": true,
+                "description": "Inclui margem de segurança (headroom)",
+                "showDescription": true
+              }
+            }
+          },
+          "position": {
+            "x": 9,
+            "y": 3,
+            "width": 3,
+            "height": 4
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_today_vs_post",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_today_vs_post",
+                  "fields": [
+                    {
+                      "name": "monthly(month)",
+                      "expression": "DATE_TRUNC(\"MONTH\", `month`)"
+                    },
+                    {
+                      "name": "sum(usd)",
+                      "expression": "SUM(`usd`)"
+                    },
+                    {
+                      "name": "basis",
+                      "expression": "`basis`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "monthly(month)",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "Mês"
+                },
+                "y": {
+                  "fieldName": "sum(usd)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "US$",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                },
+                "color": {
+                  "fieldName": "basis",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "Faturado hoje (promoção)",
+                        "color": "#4E79A7"
+                      },
+                      {
+                        "value": "Mesmo uso com regras de fev/2027",
+                        "color": "#FF7054"
+                      }
+                    ]
+                  },
+                  "displayName": "Base de cálculo"
+                }
+              },
+              "frame": {
+                "title": "Custo mensal: hoje vs regras de fev/2027 (US$)",
+                "showTitle": true
+              },
+              "mark": {
+                "layout": "group"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 7,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_components",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_components",
+                  "fields": [
+                    {
+                      "name": "monthly(month)",
+                      "expression": "DATE_TRUNC(\"MONTH\", `month`)"
+                    },
+                    {
+                      "name": "sum(usd)",
+                      "expression": "SUM(`usd`)"
+                    },
+                    {
+                      "name": "component",
+                      "expression": "`component`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "monthly(month)",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "Mês"
+                },
+                "y": {
+                  "fieldName": "sum(usd)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "US$",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                },
+                "color": {
+                  "fieldName": "component",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "LLM — usuários humanos",
+                        "color": "#1D425C"
+                      },
+                      {
+                        "value": "LLM — service principals",
+                        "color": "#DE5582"
+                      },
+                      {
+                        "value": "SQL warehouse (Genie)",
+                        "color": "#FFA600"
+                      },
+                      {
+                        "value": "Novos casos de uso",
+                        "color": "#99DDB4"
+                      }
+                    ]
+                  },
+                  "displayName": "Componente"
+                }
+              },
+              "frame": {
+                "title": "Composição do custo pós-promoção (US$)",
+                "showTitle": true,
+                "description": "LLM de humanos acima da franquia + LLM de service principals + SQL warehouse dos Genie Agents",
+                "showDescription": true
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 7,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_surface",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_surface",
+                  "fields": [
+                    {
+                      "name": "monthly(month)",
+                      "expression": "DATE_TRUNC(\"MONTH\", `month`)"
+                    },
+                    {
+                      "name": "sum(full_rate_dbus)",
+                      "expression": "SUM(`full_rate_dbus`)"
+                    },
+                    {
+                      "name": "surface",
+                      "expression": "`surface`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "monthly(month)",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "Mês"
+                },
+                "y": {
+                  "fieldName": "sum(full_rate_dbus)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "DBUs",
+                  "format": {
+                    "type": "number",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                },
+                "color": {
+                  "fieldName": "surface",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "GENIE_AGENTS",
+                        "color": "#1D425C"
+                      },
+                      {
+                        "value": "GENIE_ONE",
+                        "color": "#FFA600"
+                      },
+                      {
+                        "value": "GENIE_CODE",
+                        "color": "#995495"
+                      }
+                    ]
+                  },
+                  "displayName": "Superfície"
+                }
+              },
+              "frame": {
+                "title": "DBUs (taxa cheia) por superfície Genie",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 13,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_identity",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_surface",
+                  "fields": [
+                    {
+                      "name": "monthly(month)",
+                      "expression": "DATE_TRUNC(\"MONTH\", `month`)"
+                    },
+                    {
+                      "name": "sum(billed_dbus)",
+                      "expression": "SUM(`billed_dbus`)"
+                    },
+                    {
+                      "name": "identity_type",
+                      "expression": "`identity_type`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "monthly(month)",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "Mês"
+                },
+                "y": {
+                  "fieldName": "sum(billed_dbus)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "DBUs",
+                  "format": {
+                    "type": "number",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                },
+                "color": {
+                  "fieldName": "identity_type",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "HUMANO",
+                        "color": "#4E79A7"
+                      },
+                      {
+                        "value": "SERVICE_PRINCIPAL",
+                        "color": "#DE5582"
+                      }
+                    ]
+                  },
+                  "displayName": "Identidade"
+                }
+              },
+              "frame": {
+                "title": "DBUs já faturados hoje, por tipo de identidade",
+                "showTitle": true,
+                "description": "Service principals não têm franquia nem promoção de gratuidade: já são cobrados hoje",
+                "showDescription": true
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 13,
+            "width": 6,
+            "height": 6
+          }
+        }
+      ]
+    },
+    {
+      "name": "personas",
+      "displayName": "Usuários & personas",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1",
+      "layout": [
+        {
+          "widget": {
+            "name": "pe_header",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Usuários & personas\nA franquia de **150 DBUs/usuário/mês** é aplicada **por usuário** — médias agregadas enganam. Poucos usuários intensivos concentram a maior parte do custo; iniciantes ficam dentro da franquia."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "pe_users",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_persona",
+                  "fields": [
+                    {
+                      "name": "monthly(month)",
+                      "expression": "DATE_TRUNC(\"MONTH\", `month`)"
+                    },
+                    {
+                      "name": "sum(users)",
+                      "expression": "SUM(`users`)"
+                    },
+                    {
+                      "name": "persona",
+                      "expression": "`persona`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "monthly(month)",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "Mês"
+                },
+                "y": {
+                  "fieldName": "sum(users)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Usuários",
+                  "format": {
+                    "type": "number",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                },
+                "color": {
+                  "fieldName": "persona",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Persona"
+                }
+              },
+              "frame": {
+                "title": "Usuários ativos por persona",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 3,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "pe_cost",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_persona",
+                  "fields": [
+                    {
+                      "name": "monthly(month)",
+                      "expression": "DATE_TRUNC(\"MONTH\", `month`)"
+                    },
+                    {
+                      "name": "sum(cost_post_promo_usd)",
+                      "expression": "SUM(`cost_post_promo_usd`)"
+                    },
+                    {
+                      "name": "persona",
+                      "expression": "`persona`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "monthly(month)",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "Mês"
+                },
+                "y": {
+                  "fieldName": "sum(cost_post_promo_usd)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "US$",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                },
+                "color": {
+                  "fieldName": "persona",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Persona"
+                }
+              },
+              "frame": {
+                "title": "Custo LLM pós-promoção por persona (US$)",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 3,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "pe_band",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_band",
+                  "fields": [
+                    {
+                      "name": "dbu_band",
+                      "expression": "`dbu_band`"
+                    },
+                    {
+                      "name": "sum(users)",
+                      "expression": "SUM(`users`)"
+                    },
+                    {
+                      "name": "persona",
+                      "expression": "`persona`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "dbu_band",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "alphabetical"
+                    }
+                  },
+                  "displayName": "DBUs no mês"
+                },
+                "y": {
+                  "fieldName": "sum(users)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Usuários",
+                  "format": {
+                    "type": "number",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                },
+                "color": {
+                  "fieldName": "persona",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Persona"
+                }
+              },
+              "frame": {
+                "title": "Usuários por faixa de DBUs/mês (mês de ref.)",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 9,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "pe_stats",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_persona",
+                  "fields": [
+                    {
+                      "name": "month",
+                      "expression": "`month`"
+                    },
+                    {
+                      "name": "persona",
+                      "expression": "`persona`"
+                    },
+                    {
+                      "name": "users",
+                      "expression": "`users`"
+                    },
+                    {
+                      "name": "p50_dbus",
+                      "expression": "`p50_dbus`"
+                    },
+                    {
+                      "name": "p90_dbus",
+                      "expression": "`p90_dbus`"
+                    },
+                    {
+                      "name": "users_within_free",
+                      "expression": "`users_within_free`"
+                    },
+                    {
+                      "name": "cost_post_promo_usd",
+                      "expression": "`cost_post_promo_usd`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "month",
+                    "displayName": "Mês"
+                  },
+                  {
+                    "fieldName": "persona",
+                    "displayName": "Persona"
+                  },
+                  {
+                    "fieldName": "users",
+                    "displayName": "Usuários"
+                  },
+                  {
+                    "fieldName": "p50_dbus",
+                    "displayName": "p50 DBUs",
+                    "format": {
+                      "type": "number",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "p90_dbus",
+                    "displayName": "p90 DBUs",
+                    "format": {
+                      "type": "number",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "users_within_free",
+                    "displayName": "Na franquia"
+                  },
+                  {
+                    "fieldName": "cost_post_promo_usd",
+                    "displayName": "Custo pós-promo",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              "frame": {
+                "title": "Percentis por persona (use para definir limites por usuário no budget)",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 9,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "pe_top",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_top",
+                  "fields": [
+                    {
+                      "name": "identity",
+                      "expression": "`identity`"
+                    },
+                    {
+                      "name": "identity_type",
+                      "expression": "`identity_type`"
+                    },
+                    {
+                      "name": "persona",
+                      "expression": "`persona`"
+                    },
+                    {
+                      "name": "full_rate_dbus",
+                      "expression": "`full_rate_dbus`"
+                    },
+                    {
+                      "name": "agents_dbus",
+                      "expression": "`agents_dbus`"
+                    },
+                    {
+                      "name": "one_dbus",
+                      "expression": "`one_dbus`"
+                    },
+                    {
+                      "name": "code_dbus",
+                      "expression": "`code_dbus`"
+                    },
+                    {
+                      "name": "billable_dbus_post_promo",
+                      "expression": "`billable_dbus_post_promo`"
+                    },
+                    {
+                      "name": "cost_today_usd",
+                      "expression": "`cost_today_usd`"
+                    },
+                    {
+                      "name": "cost_post_promo_usd",
+                      "expression": "`cost_post_promo_usd`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "identity",
+                    "displayName": "Identidade"
+                  },
+                  {
+                    "fieldName": "identity_type",
+                    "displayName": "Tipo"
+                  },
+                  {
+                    "fieldName": "persona",
+                    "displayName": "Persona"
+                  },
+                  {
+                    "fieldName": "full_rate_dbus",
+                    "displayName": "DBUs (taxa cheia)",
+                    "format": {
+                      "type": "number",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "agents_dbus",
+                    "displayName": "Agents",
+                    "format": {
+                      "type": "number",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "one_dbus",
+                    "displayName": "One",
+                    "format": {
+                      "type": "number",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "code_dbus",
+                    "displayName": "Code",
+                    "format": {
+                      "type": "number",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "billable_dbus_post_promo",
+                    "displayName": "DBUs cobráveis pós-promo",
+                    "format": {
+                      "type": "number",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "cost_today_usd",
+                    "displayName": "Custo hoje",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "cost_post_promo_usd",
+                    "displayName": "Custo pós-promo",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              "frame": {
+                "title": "Top 25 identidades por custo pós-promoção (mês de referência)",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 15,
+            "width": 12,
+            "height": 8
+          }
+        }
+      ]
+    },
+    {
+      "name": "agents",
+      "displayName": "Genie Agents & warehouses",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1",
+      "layout": [
+        {
+          "widget": {
+            "name": "ag_header",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Genie Agents & SQL warehouses\nO custo de **computação SQL** não entra no budget do Genie e pode superar o de LLM. Rateio pelo tempo de task de `system.query.history` (`query_source.genie_space_id`). Warehouses **dedicados** ao Genie dão atribuição exata."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "ag_wh",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_attrib_top",
+                  "fields": [
+                    {
+                      "name": "agent_name",
+                      "expression": "`agent_name`"
+                    },
+                    {
+                      "name": "sum(attributed_net_cost_usd)",
+                      "expression": "SUM(`attributed_net_cost_usd`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "y": {
+                  "fieldName": "agent_name",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "value"
+                    }
+                  },
+                  "displayName": "Genie Agent"
+                },
+                "x": {
+                  "fieldName": "sum(attributed_net_cost_usd)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "US$",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "title": "Top 15 Genie Agents — custo de warehouse atribuído (US$, mês de ref.)",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 3,
+            "width": 6,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "ag_unit",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_unit",
+                  "fields": [
+                    {
+                      "name": "agent_name",
+                      "expression": "`agent_name`"
+                    },
+                    {
+                      "name": "avg(total_cost_per_question_usd)",
+                      "expression": "AVG(`total_cost_per_question_usd`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "y": {
+                  "fieldName": "agent_name",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "value"
+                    }
+                  },
+                  "displayName": "Genie Agent"
+                },
+                "x": {
+                  "fieldName": "avg(total_cost_per_question_usd)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "US$",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "title": "Custo total por pergunta (US$) — 25 Agents com mais perguntas",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 3,
+            "width": 6,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "ag_unit_tbl",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_unit",
+                  "fields": [
+                    {
+                      "name": "agent_name",
+                      "expression": "`agent_name`"
+                    },
+                    {
+                      "name": "questions",
+                      "expression": "`questions`"
+                    },
+                    {
+                      "name": "agent_mode_share",
+                      "expression": "`agent_mode_share`"
+                    },
+                    {
+                      "name": "active_identities",
+                      "expression": "`active_identities`"
+                    },
+                    {
+                      "name": "llm_dbus_per_question",
+                      "expression": "`llm_dbus_per_question`"
+                    },
+                    {
+                      "name": "llm_cost_per_question_usd",
+                      "expression": "`llm_cost_per_question_usd`"
+                    },
+                    {
+                      "name": "warehouse_cost_per_question_usd",
+                      "expression": "`warehouse_cost_per_question_usd`"
+                    },
+                    {
+                      "name": "total_cost_per_question_usd",
+                      "expression": "`total_cost_per_question_usd`"
+                    },
+                    {
+                      "name": "warehouse_net_cost_usd",
+                      "expression": "`warehouse_net_cost_usd`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "agent_name",
+                    "displayName": "Genie Agent"
+                  },
+                  {
+                    "fieldName": "questions",
+                    "displayName": "Perguntas"
+                  },
+                  {
+                    "fieldName": "agent_mode_share",
+                    "displayName": "% Agent mode",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "active_identities",
+                    "displayName": "Identidades ativas"
+                  },
+                  {
+                    "fieldName": "llm_dbus_per_question",
+                    "displayName": "DBUs LLM/pergunta",
+                    "format": {
+                      "type": "number",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "llm_cost_per_question_usd",
+                    "displayName": "LLM/pergunta",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 3
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "warehouse_cost_per_question_usd",
+                    "displayName": "Warehouse/pergunta",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 3
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "total_cost_per_question_usd",
+                    "displayName": "Total/pergunta",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 3
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "warehouse_net_cost_usd",
+                    "displayName": "Warehouse no mês",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              "frame": {
+                "title": "Economia unitária por Genie Agent (mês de referência)",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 10,
+            "width": 12,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "ag_attr_tbl",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_attrib",
+                  "fields": [
+                    {
+                      "name": "warehouse_name",
+                      "expression": "`warehouse_name`"
+                    },
+                    {
+                      "name": "agent_name",
+                      "expression": "`agent_name`"
+                    },
+                    {
+                      "name": "queries",
+                      "expression": "`queries`"
+                    },
+                    {
+                      "name": "share_of_warehouse",
+                      "expression": "`share_of_warehouse`"
+                    },
+                    {
+                      "name": "attributed_net_cost_usd",
+                      "expression": "`attributed_net_cost_usd`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "warehouse_name",
+                    "displayName": "Warehouse"
+                  },
+                  {
+                    "fieldName": "agent_name",
+                    "displayName": "Genie Agent / carga"
+                  },
+                  {
+                    "fieldName": "queries",
+                    "displayName": "Queries"
+                  },
+                  {
+                    "fieldName": "share_of_warehouse",
+                    "displayName": "% do warehouse",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "attributed_net_cost_usd",
+                    "displayName": "Custo atribuído (líq.)",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              "frame": {
+                "title": "Rateio por warehouse (inclui carga não-Genie em warehouses compartilhados)",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 17,
+            "width": 12,
+            "height": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "previsao",
+      "displayName": "Previsão FY2027",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1",
+      "layout": [
+        {
+          "widget": {
+            "name": "fc_header",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Previsão FY2027\nBase = run-rate do último mês completo, reprecificado pelas regras pós-promoção e projetado com os crescimentos de cada cenário (tabela `forecast_scenarios`). Janeiro/2027 ainda é promocional. Altere premissas com `UPDATE forecast_assumptions ...` e atualize o dashboard."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "fc_cons",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_fy_totals",
+                  "fields": [
+                    {
+                      "name": "sum(total_with_headroom_usd)",
+                      "expression": "SUM(`total_with_headroom_usd`)"
+                    }
+                  ],
+                  "disaggregated": false,
+                  "filters": [
+                    {
+                      "expression": "`scenario` = 'Conservador'"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(total_with_headroom_usd)",
+                  "displayName": "FY2027 — Conservador",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "title": "FY2027 — Conservador",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 3,
+            "width": 4,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "fc_base",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_fy_totals",
+                  "fields": [
+                    {
+                      "name": "sum(total_with_headroom_usd)",
+                      "expression": "SUM(`total_with_headroom_usd`)"
+                    }
+                  ],
+                  "disaggregated": false,
+                  "filters": [
+                    {
+                      "expression": "`scenario` = 'Base'"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(total_with_headroom_usd)",
+                  "displayName": "FY2027 — Base",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "title": "FY2027 — Base",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 3,
+            "width": 4,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "fc_aggr",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_fy_totals",
+                  "fields": [
+                    {
+                      "name": "sum(total_with_headroom_usd)",
+                      "expression": "SUM(`total_with_headroom_usd`)"
+                    }
+                  ],
+                  "disaggregated": false,
+                  "filters": [
+                    {
+                      "expression": "`scenario` = 'Agressivo'"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(total_with_headroom_usd)",
+                  "displayName": "FY2027 — Agressivo",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "title": "FY2027 — Agressivo",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 3,
+            "width": 4,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "fc_line",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_forecast",
+                  "fields": [
+                    {
+                      "name": "monthly(month)",
+                      "expression": "DATE_TRUNC(\"MONTH\", `month`)"
+                    },
+                    {
+                      "name": "sum(total_with_headroom_usd)",
+                      "expression": "SUM(`total_with_headroom_usd`)"
+                    },
+                    {
+                      "name": "scenario",
+                      "expression": "`scenario`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "monthly(month)",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "Mês"
+                },
+                "y": {
+                  "fieldName": "sum(total_with_headroom_usd)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "US$",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                },
+                "color": {
+                  "fieldName": "scenario",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "Conservador",
+                        "color": "#4E79A7"
+                      },
+                      {
+                        "value": "Base",
+                        "color": "#FFA600"
+                      },
+                      {
+                        "value": "Agressivo",
+                        "color": "#DE5582"
+                      }
+                    ]
+                  },
+                  "displayName": "Cenário"
+                }
+              },
+              "frame": {
+                "title": "Custo mensal previsto por cenário (US$, com margem)",
+                "showTitle": true
+              },
+              "annotations": [
+                {
+                  "type": "vertical-line",
+                  "encodings": {
+                    "x": {
+                      "dataValue": "2027-01-31T12:00:00.000",
+                      "dataType": "DATETIME"
+                    },
+                    "label": {
+                      "value": "Fim da promoção (31/01/2027)"
+                    },
+                    "color": {
+                      "value": {
+                        "hex": "#FF7E5C"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 6,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "fc_comp",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_forecast_long",
+                  "fields": [
+                    {
+                      "name": "monthly(month)",
+                      "expression": "DATE_TRUNC(\"MONTH\", `month`)"
+                    },
+                    {
+                      "name": "sum(usd)",
+                      "expression": "SUM(`usd`)"
+                    },
+                    {
+                      "name": "component",
+                      "expression": "`component`"
+                    }
+                  ],
+                  "disaggregated": false,
+                  "filters": [
+                    {
+                      "expression": "`scenario` = 'Base'"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "monthly(month)",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "Mês"
+                },
+                "y": {
+                  "fieldName": "sum(usd)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "US$",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                },
+                "color": {
+                  "fieldName": "component",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "LLM — usuários humanos",
+                        "color": "#1D425C"
+                      },
+                      {
+                        "value": "LLM — service principals",
+                        "color": "#DE5582"
+                      },
+                      {
+                        "value": "SQL warehouse (Genie)",
+                        "color": "#FFA600"
+                      },
+                      {
+                        "value": "Novos casos de uso",
+                        "color": "#99DDB4"
+                      }
+                    ]
+                  },
+                  "displayName": "Componente"
+                }
+              },
+              "frame": {
+                "title": "Cenário Base por componente (US$, sem margem)",
+                "showTitle": true
+              },
+              "annotations": [
+                {
+                  "type": "vertical-line",
+                  "encodings": {
+                    "x": {
+                      "dataValue": "2027-01-31T12:00:00.000",
+                      "dataType": "DATETIME"
+                    },
+                    "label": {
+                      "value": "Fim da promoção (31/01/2027)"
+                    },
+                    "color": {
+                      "value": {
+                        "hex": "#FF7E5C"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 6,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "fc_totals",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_fy_totals",
+                  "fields": [
+                    {
+                      "name": "scenario",
+                      "expression": "`scenario`"
+                    },
+                    {
+                      "name": "human_llm_usd",
+                      "expression": "`human_llm_usd`"
+                    },
+                    {
+                      "name": "sp_llm_usd",
+                      "expression": "`sp_llm_usd`"
+                    },
+                    {
+                      "name": "genie_warehouse_usd",
+                      "expression": "`genie_warehouse_usd`"
+                    },
+                    {
+                      "name": "new_use_cases_usd",
+                      "expression": "`new_use_cases_usd`"
+                    },
+                    {
+                      "name": "total_usd",
+                      "expression": "`total_usd`"
+                    },
+                    {
+                      "name": "total_with_headroom_usd",
+                      "expression": "`total_with_headroom_usd`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "scenario",
+                    "displayName": "Cenário"
+                  },
+                  {
+                    "fieldName": "human_llm_usd",
+                    "displayName": "LLM humanos",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "sp_llm_usd",
+                    "displayName": "LLM service principals",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "genie_warehouse_usd",
+                    "displayName": "SQL warehouse",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "new_use_cases_usd",
+                    "displayName": "Novos casos de uso",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "total_usd",
+                    "displayName": "Total",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "total_with_headroom_usd",
+                    "displayName": "Total c/ margem",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              "frame": {
+                "title": "Totais do ano fiscal por cenário",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 12,
+            "width": 12,
+            "height": 4
+          }
+        },
+        {
+          "widget": {
+            "name": "fc_monthly",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_forecast",
+                  "fields": [
+                    {
+                      "name": "scenario",
+                      "expression": "`scenario`"
+                    },
+                    {
+                      "name": "month",
+                      "expression": "`month`"
+                    },
+                    {
+                      "name": "in_promo",
+                      "expression": "`in_promo`"
+                    },
+                    {
+                      "name": "human_llm_usd",
+                      "expression": "`human_llm_usd`"
+                    },
+                    {
+                      "name": "sp_llm_usd",
+                      "expression": "`sp_llm_usd`"
+                    },
+                    {
+                      "name": "genie_warehouse_usd",
+                      "expression": "`genie_warehouse_usd`"
+                    },
+                    {
+                      "name": "new_use_cases_usd",
+                      "expression": "`new_use_cases_usd`"
+                    },
+                    {
+                      "name": "total_usd",
+                      "expression": "`total_usd`"
+                    },
+                    {
+                      "name": "total_with_headroom_usd",
+                      "expression": "`total_with_headroom_usd`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "scenario",
+                    "displayName": "Cenário"
+                  },
+                  {
+                    "fieldName": "month",
+                    "displayName": "Mês"
+                  },
+                  {
+                    "fieldName": "in_promo",
+                    "displayName": "Promoção?"
+                  },
+                  {
+                    "fieldName": "human_llm_usd",
+                    "displayName": "LLM humanos",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "sp_llm_usd",
+                    "displayName": "LLM SPs",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "genie_warehouse_usd",
+                    "displayName": "Warehouse",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "new_use_cases_usd",
+                    "displayName": "Novos UCs",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "total_usd",
+                    "displayName": "Total",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "total_with_headroom_usd",
+                    "displayName": "Total c/ margem",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              "frame": {
+                "title": "Previsão mensal (modelo para o Apêndice A do guia)",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 16,
+            "width": 12,
+            "height": 8
+          }
+        }
+      ]
+    },
+    {
+      "name": "premissas",
+      "displayName": "Premissas",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1",
+      "layout": [
+        {
+          "widget": {
+            "name": "as_header",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Premissas da previsão\nTabelas editáveis no esquema da demo: `forecast_assumptions` (descontos, adicional ESC, margem, franquia, datas) e `forecast_scenarios` (crescimentos mensais e novos casos de uso). Exemplo:\n\n`UPDATE forecast_assumptions SET contract_discount_srti = 0.30;`"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "as_tbl",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_assumptions",
+                  "fields": [
+                    {
+                      "name": "srti_sku",
+                      "expression": "`srti_sku`"
+                    },
+                    {
+                      "name": "srti_list_price",
+                      "expression": "`srti_list_price`"
+                    },
+                    {
+                      "name": "srti_net_price_with_addon",
+                      "expression": "`srti_net_price_with_addon`"
+                    },
+                    {
+                      "name": "contract_discount_srti",
+                      "expression": "`contract_discount_srti`"
+                    },
+                    {
+                      "name": "contract_discount_sql",
+                      "expression": "`contract_discount_sql`"
+                    },
+                    {
+                      "name": "addon_uplift",
+                      "expression": "`addon_uplift`"
+                    },
+                    {
+                      "name": "headroom",
+                      "expression": "`headroom`"
+                    },
+                    {
+                      "name": "free_allowance_dbus",
+                      "expression": "`free_allowance_dbus`"
+                    },
+                    {
+                      "name": "promo_factor",
+                      "expression": "`promo_factor`"
+                    },
+                    {
+                      "name": "promo_end_date",
+                      "expression": "`promo_end_date`"
+                    },
+                    {
+                      "name": "fy_start",
+                      "expression": "`fy_start`"
+                    },
+                    {
+                      "name": "baseline_month",
+                      "expression": "`baseline_month`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "srti_sku",
+                    "displayName": "SKU SRTI"
+                  },
+                  {
+                    "fieldName": "srti_list_price",
+                    "displayName": "Preço lista US$/DBU"
+                  },
+                  {
+                    "fieldName": "srti_net_price_with_addon",
+                    "displayName": "Preço líquido US$/DBU"
+                  },
+                  {
+                    "fieldName": "contract_discount_srti",
+                    "displayName": "Desconto SRTI",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "contract_discount_sql",
+                    "displayName": "Desconto SQL",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "addon_uplift",
+                    "displayName": "Adicional ESC",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "headroom",
+                    "displayName": "Margem",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "free_allowance_dbus",
+                    "displayName": "Franquia DBUs"
+                  },
+                  {
+                    "fieldName": "promo_factor",
+                    "displayName": "Fator promo"
+                  },
+                  {
+                    "fieldName": "promo_end_date",
+                    "displayName": "Fim promoção"
+                  },
+                  {
+                    "fieldName": "fy_start",
+                    "displayName": "Início FY"
+                  },
+                  {
+                    "fieldName": "baseline_month",
+                    "displayName": "Mês base"
+                  }
+                ]
+              },
+              "frame": {
+                "title": "Premissas",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 3,
+            "width": 12,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "as_scen",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_scenarios",
+                  "fields": [
+                    {
+                      "name": "scenario",
+                      "expression": "`scenario`"
+                    },
+                    {
+                      "name": "human_usage_growth_m",
+                      "expression": "`human_usage_growth_m`"
+                    },
+                    {
+                      "name": "sp_growth_m",
+                      "expression": "`sp_growth_m`"
+                    },
+                    {
+                      "name": "warehouse_growth_m",
+                      "expression": "`warehouse_growth_m`"
+                    },
+                    {
+                      "name": "new_uc_usd_m",
+                      "expression": "`new_uc_usd_m`"
+                    },
+                    {
+                      "name": "description",
+                      "expression": "`description`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "scenario",
+                    "displayName": "Cenário"
+                  },
+                  {
+                    "fieldName": "human_usage_growth_m",
+                    "displayName": "Cresc. humanos/mês",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "sp_growth_m",
+                    "displayName": "Cresc. SPs/mês",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "warehouse_growth_m",
+                    "displayName": "Cresc. warehouse/mês",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "new_uc_usd_m",
+                    "displayName": "Novos UCs US$/mês (acum.)",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "description",
+                    "displayName": "Descrição"
+                  }
+                ]
+              },
+              "frame": {
+                "title": "Cenários",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 6,
+            "width": 12,
+            "height": 4
+          }
+        }
+      ]
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "canvasBackgroundColor": {
+        "light": "#FCFCFC",
+        "dark": "#1F272D"
+      },
+      "widgetBackgroundColor": {
+        "light": "#FFFFFF",
+        "dark": "#11171C"
+      },
+      "widgetBorderColor": {
+        "light": "#FFFFFF",
+        "dark": "#11171C"
+      },
+      "fontColor": {
+        "light": "#11171C",
+        "dark": "#E8ECF0"
+      },
+      "selectionColor": {
+        "light": "#2272B4",
+        "dark": "#8ACAFF"
+      },
+      "visualizationColors": [
+        "#1D425C",
+        "#FFA600",
+        "#DE5582",
+        "#4E79A7",
+        "#995495",
+        "#FF7054",
+        "#99DDB4"
+      ],
+      "widgetHeaderAlignment": "LEFT"
+    }
+  }
+}

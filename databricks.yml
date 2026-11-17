@@ -1,0 +1,53 @@
+# Genie FinOps & FY2027 forecast — views + AI/BI dashboard over Databricks system tables.
+# No data is generated or copied: the job only creates views (and two small input tables with forecast assumptions).
+bundle:
+  name: genie-finops-forecast
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Catalog where the schema with the views will be created (needs CREATE SCHEMA)
+  schema:
+    description: Schema for the views and the forecast input tables
+    default: genie_finops
+  warehouse_id:
+    description: SQL warehouse used by the dashboard
+    lookup:
+      warehouse: Serverless Starter Warehouse
+  history_start:
+    description: First usage date to analyze (GENIE_FREE_USAGE exists from 2026-07-20)
+    default: "2026-07-20"
+  account_id:
+    description: Optional account filter (required when the source tables hold several accounts)
+    default: ""
+  workspace_ids:
+    description: Optional comma-separated workspace IDs to analyze (empty = all workspaces visible in the system tables)
+    default: ""
+  billing_usage_table:
+    default: system.billing.usage
+  list_prices_table:
+    default: system.billing.list_prices
+  query_history_table:
+    default: system.query.history
+  audit_table:
+    default: system.access.audit
+  warehouses_table:
+    default: system.compute.warehouses
+  workspaces_table:
+    default: system.access.workspaces_latest
+
+targets:
+  # Development: resources are prefixed with "[dev <user>]" and the job schedule is paused.
+  #   databricks bundle deploy -t dev --profile <profile> --var="catalog=<catalog>"
+  dev:
+    default: true
+    mode: development
+
+  # Production: the job runs daily at 06:00 (America/Sao_Paulo) and the dashboards are published without a prefix.
+  #   databricks bundle deploy -t prod --profile <profile> --var="catalog=<catalog>" --var="warehouse_id=<id>"
+  prod:
+    mode: production
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}

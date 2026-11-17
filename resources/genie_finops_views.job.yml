@@ -1,0 +1,31 @@
+resources:
+  jobs:
+    genie_finops_views:
+      name: genie-finops-build-views
+      description: >
+        Creates/refreshes the Genie FinOps views over the system tables (billing, list prices, query history,
+        audit, warehouses, workspaces) and the forecast input tables. Views are live; the daily run refreshes the
+        audit-log aggregate (agg_genie_questions_monthly).
+      parameters:
+        - {name: catalog, default: "${var.catalog}"}
+        - {name: schema, default: "${var.schema}"}
+        - {name: history_start, default: "${var.history_start}"}
+        - {name: account_id, default: "${var.account_id}"}
+        - {name: workspace_ids, default: "${var.workspace_ids}"}
+        - {name: billing_usage_table, default: "${var.billing_usage_table}"}
+        - {name: list_prices_table, default: "${var.list_prices_table}"}
+        - {name: query_history_table, default: "${var.query_history_table}"}
+        - {name: audit_table, default: "${var.audit_table}"}
+        - {name: warehouses_table, default: "${var.warehouses_table}"}
+        - {name: workspaces_table, default: "${var.workspaces_table}"}
+        - {name: reset_assumptions, default: "false"}
+      tasks:
+        - task_key: build_views
+          notebook_task:
+            notebook_path: ../src/notebooks/build_genie_finops_views.py
+      schedule:
+        quartz_cron_expression: "0 0 6 * * ?"
+        timezone_id: America/Sao_Paulo
+        pause_status: UNPAUSED
+      tags:
+        project: genie-finops-forecast

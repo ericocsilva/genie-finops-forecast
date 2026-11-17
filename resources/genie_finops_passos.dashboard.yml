@@ -1,0 +1,8 @@
+resources:
+  dashboards:
+    genie_finops_passos:
+      display_name: "Genie FinOps — Guia passo a passo (Passos 1 a 10)"
+      file_path: ../src/dashboards/genie_finops_passos.lvdash.json
+      warehouse_id: ${var.warehouse_id}
+      dataset_catalog: ${var.catalog}
+      dataset_schema: ${var.schema}
